@@ -469,3 +469,95 @@ button:disabled { opacity: .55; cursor: wait; }
   font-size: 12px;
 }
 .rt-total .ab-absent-total { color: var(--accent); }
+
+/* 换景通道维护 */
+.passage-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.passage-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 14px;
+}
+.passage-item .passage-edge { color: var(--accent2); font-weight: 700; }
+.passage-item .link { margin-left: auto; }
+#passage-form select { min-width: 150px; }
+#passage-form .arrow { font-size: 16px; }
+
+/* 换景通道规划预警 */
+#routing-summary strong { color: var(--text); }
+#routing-summary .sum-ok { color: var(--ok); }
+#routing-summary .sum-lack { color: var(--err); }
+#routing-summary .sum-skip { color: var(--muted); }
+
+.rt2-banner-ok {
+  border: 1px solid var(--ok);
+  border-radius: 10px;
+  background: rgba(76, 175, 125, .08);
+  color: var(--ok);
+  padding: 10px 14px;
+  font-size: 14px;
+  margin-bottom: 14px;
+}
+.rt2-alert {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid var(--err);
+  border-left: 4px solid var(--err);
+  border-radius: 8px;
+  background: rgba(224, 92, 106, .06);
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.rt2-alert strong { color: var(--err); white-space: nowrap; }
+.rt2-alert span { color: var(--text); }
+
+.rt2-group { margin-bottom: 10px; }
+.rt2-routes { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.rt2-route {
+  font-size: 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.rt2-prop { color: var(--accent); margin-right: 6px; }
+.rt2-node { color: var(--text); }
+.rt2-hops {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 10px;
+}
+.rt2-contention { margin-top: 6px; }
+.rt2-cluster {
+  border: 1px dashed var(--err);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  background: rgba(224, 92, 106, .05);
+}
+.rt2-cluster-head { font-size: 13px; }
+.rt2-cluster-head strong { color: var(--err); }
+.rt2-cluster-head .hint { display: inline; margin: 0 0 0 4px; font-size: 12px; }
+.rt2-cluster-list { margin: 6px 0 0; padding-left: 20px; font-size: 13px; }
+.rt2-cluster-list li { margin: 2px 0; }

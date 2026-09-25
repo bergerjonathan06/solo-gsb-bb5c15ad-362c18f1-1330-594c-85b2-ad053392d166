@@ -223,6 +223,8 @@ function render() {
   renderAssignments();
   renderRotation();
   renderAbsenceForm();
+  renderPassages();
+  renderRouting();
 }
 
 /* ---------- 换景人员与逐提示岗位表 ---------- */
@@ -1288,6 +1290,228 @@ $('#absence-form').addEventListener('submit', async (e) => {
     btn.textContent = '🧯 开始临时缺席试排';
   }
 });
+
+/* ---------- 换景通道（无向边维护） ---------- */
+
+function passageLocationOptions(selected, otherValue) {
+  return state.locations
+    .map((l) => `<option value="${esc(l.name)}" ${l.name === selected ? 'selected' : ''}>${esc(l.name)}</option>`)
+    .join('');
+}
+
+function renderPassages() {
+  const list = state.passages || [];
+  const ul = $('#passage-list');
+  ul.innerHTML = list.length
+    ? list
+        .map((p) => `
+          <li class="passage-item">
+            <strong>${esc(p.a)}</strong>
+            <span class="passage-edge">—</span>
+            <strong>${esc(p.b)}</strong>
+            <button type="button" class="link" data-del-passage-a="${esc(p.a)}" data-del-passage-b="${esc(p.b)}" title="删除通道">✕</button>
+          </li>`)
+        .join('')
+    : '<li class="hint">还没有通道，请在下方选择两个区位添加；没有通道连通的转移在通道规划中会判定为端点不连通。</li>';
+
+  // 保留用户已选端点；区位集合变化后丢弃已不存在的选择（选项纯按区位渲染，
+  // 自环由 change 监听在两端相同的瞬间清空另一端 + 服务端校验双重拦截）
+  const selA = $('#passage-a');
+  const selB = $('#passage-b');
+  const has = (name) => state.locations.some((l) => l.name === name);
+  const a = has(selA.value) ? selA.value : '';
+  const b = has(selB.value) ? selB.value : '';
+  selA.innerHTML = ['<option value="">选择端点区位…</option>', passageLocationOptions(a)].join('');
+  selB.innerHTML = ['<option value="">选择端点区位…</option>', passageLocationOptions(b)].join('');
+  selA.value = a;
+  selB.value = b;
+}
+
+$('#passage-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const a = $('#passage-a').value;
+  const b = $('#passage-b').value;
+  if (!a || !b) {
+    toast('请选择通道的两个端点区位');
+    return;
+  }
+  if (a === b) {
+    toast('通道的两个端点不能是同一区位（禁止自环）');
+    return;
+  }
+  api('/api/passages', 'POST', { a, b }).catch(() => {});
+});
+
+// 任一端点改变时：若两端选成同一区位（自环），清空另一端；再刷新选项列表
+$('#passage-form').addEventListener('change', (e) => {
+  if (e.target.id !== 'passage-a' && e.target.id !== 'passage-b') return;
+  const a = $('#passage-a');
+  const b = $('#passage-b');
+  if (a.value && a.value === b.value) {
+    if (e.target.id === 'passage-a') b.value = '';
+    else a.value = '';
+    toast('通道的两个端点不能是同一区位（禁止自环）');
+  }
+  renderPassages();
+});
+
+$('#passage-list').addEventListener('click', (e) => {
+  const a = e.target.dataset.delPassageA;
+  const b = e.target.dataset.delPassageB;
+  if (!a || !b) return;
+  if (confirm(`删除「${a}」与「${b}」之间的通道？通道规划将立即重算。`))
+    api(`/api/passages/${encodeURIComponent(a)}/${encodeURIComponent(b)}`, 'DELETE').catch(() => {});
+});
+
+/* ---------- 换景通道规划预警（逐组联合搜索，实时重算） ---------- */
+
+function routePathHtml(rt) {
+  // 完整经过区位：来源 → … → 目标，标出经过的通道段数
+  const nodes = rt.path
+    .map((loc, i) => (i === 0
+      ? `<strong>${esc(loc)}</strong>`
+      : `<span class="rt2-node">${esc(loc)}</span>`))
+    .join('<span class="arrow">→</span>');
+  return `
+    <div class="rt2-route">
+      <span class="rt2-prop">「${esc(rt.prop)}」</span>
+      ${nodes}
+      <span class="rt2-hops">${rt.hops} 段通道</span>
+    </div>`;
+}
+
+function routingGroupHtml(g) {
+  if (g.status === 'ok') {
+    const routes = g.routes.map(routePathHtml).join('');
+    return `
+      <div class="cue-item ok rt2-group">
+        <div class="cue-head">
+          <span class="num">提示 ${g.number}</span>
+          <span class="note">${esc(g.note || '')}</span>
+          <span class="badge ok">✓ 规划可行（${g.routes.length} 条转移，路径两两不共边）</span>
+        </div>
+        <div class="rt2-routes">${routes}</div>
+      </div>`;
+  }
+
+  if (g.status === 'disconnected') {
+    const lines = g.disconnected
+      .map((d) => `<li>「${esc(d.prop)}」：${esc(d.from)} <span class="arrow">→</span> ${esc(d.to)}（两端区位在通道图上不连通，无论其他转移怎么走都无路可达）</li>`)
+      .join('');
+    return `
+      <div class="cue-item fail rt2-group">
+        <div class="cue-head">
+          <span class="num">提示 ${g.number}</span>
+          <span class="note">${esc(g.note || '')}</span>
+          <span class="badge fail">✗ 端点不连通</span>
+        </div>
+        <ul class="cue-errors"><li>下列转移的来源与目标区位之间不存在任何通道路径，请在 ⑪ 中补建通道：</li>${lines}</ul>
+      </div>`;
+  }
+
+  if (g.status === 'limited') {
+    return `
+      <div class="cue-item fail rt2-group">
+        <div class="cue-head">
+          <span class="num">提示 ${g.number}</span>
+          <span class="note">${esc(g.note || '')}</span>
+          <span class="badge fail">⚠ 未计算（路径规模超限）</span>
+        </div>
+        <ul class="cue-errors"><li>${esc(g.limited ? g.limited.message : '简单路径枚举量超过上限')}</li></ul>
+      </div>`;
+  }
+
+  // contention：通道争用，按极小不可行子集（争用簇）列出受影响转移
+  const clusters = (g.contention && g.contention.clusters || [])
+    .map((c, ci) => {
+      const lines = c.transfers
+        .map((t) => `<li>「${esc(t.prop)}」：${esc(t.from)} <span class="arrow">→</span> ${esc(t.to)}</li>`)
+        .join('');
+      return `
+        <div class="rt2-cluster">
+          <div class="rt2-cluster-head">争用簇 ${ci + 1}：<strong>${c.transfers.length} 条转移争用同一组通道</strong>
+            <span class="hint">（各转移端点本身均连通，但簇内任一条转移无论选哪条路径，都会与其余转移的路径共用通道；簇内转移少一条即可排开）</span>
+          </div>
+          <ul class="rt2-cluster-list">${lines}</ul>
+        </div>`;
+    })
+    .join('');
+  const truncNote = g.contention && g.contention.truncated
+    ? '<p class="hint">（转移组合规模超过诊断枚举上限，已退化为把全部转移列为受影响）</p>'
+    : '';
+  return `
+    <div class="cue-item fail rt2-group">
+      <div class="cue-head">
+        <span class="num">提示 ${g.number}</span>
+        <span class="note">${esc(g.note || '')}</span>
+        <span class="badge fail">✗ 通道争用</span>
+      </div>
+      <ul class="cue-errors">
+        <li>每条转移的端点各自都有通道可达，但<strong>不存在一组互不共边的路径</strong>——系统已联合搜索并允许各转移改走绕行路径（非逐条固定最短路），仍无法排开；受影响转移如下，可在 ⑪ 中为争用通道补建平行通道：</li>
+      </ul>
+      <div class="rt2-contention">${clusters}</div>
+      ${truncNote}
+    </div>`;
+}
+
+function renderRouting() {
+  const rt = state.routing;
+  const summaryEl = $('#routing-summary');
+  const alertsEl = $('#routing-alerts');
+  const groupsEl = $('#routing-groups');
+  if (!rt) {
+    summaryEl.textContent = '';
+    alertsEl.innerHTML = '';
+    groupsEl.innerHTML = '';
+    return;
+  }
+
+  const s = rt.summary;
+  summaryEl.innerHTML =
+    `共对 <strong>${s.total}</strong> 条重放生效提示规划通道线路` +
+    (rt.skippedCueCount ? `，<span class="sum-skip">${rt.skippedCueCount} 条失败提示不参与规划</span>` : '') +
+    `：<span class="sum-ok">${s.ok} 组可行</span>` +
+    (s.disconnected ? ` · <span class="sum-lack">${s.disconnected} 组端点不连通</span>` : '') +
+    (s.contention ? ` · <span class="sum-lack">${s.contention} 组通道争用</span>` : '') +
+    (s.limited ? ` · <span class="sum-lack">${s.limited} 组规模超限</span>` : '') +
+    `。`;
+
+  if (rt.status === 'empty') {
+    alertsEl.innerHTML = '<p class="hint">当前没有任何整组生效的提示，无需规划通道线路（失败提示不参与）。</p>';
+    groupsEl.innerHTML = '';
+    return;
+  }
+
+  // 独立预警条：把每组问题浓缩成一行（提示号 + 原因 + 受影响转移）
+  const problemGroups = rt.groups.filter((g) => g.status !== 'ok');
+  if (!problemGroups.length) {
+    alertsEl.innerHTML = '<div class="rt2-banner-ok">✓ 全部生效提示均已找到两两不共边的通道线路组合，下方逐组列出完整经过区位。</div>';
+  } else {
+    alertsEl.innerHTML = problemGroups
+      .map((g) => {
+        if (g.status === 'disconnected') {
+          const props = g.disconnected.map((d) => `「${esc(d.prop)}」${esc(d.from)}→${esc(d.to)}`).join('、');
+          return `<div class="rt2-alert disc"><strong>提示 ${g.number} · 端点不连通</strong><span>${props}</span></div>`;
+        }
+        if (g.status === 'limited') {
+          return `<div class="rt2-alert"><strong>提示 ${g.number} · 路径规模超限未计算</strong></div>`;
+        }
+        const affected = new Map();
+        (g.contention.clusters || []).forEach((c) =>
+          c.transfers.forEach((t) => affected.set(t.index, t))
+        );
+        const props = [...affected.values()]
+          .map((t) => `「${esc(t.prop)}」${esc(t.from)}→${esc(t.to)}`)
+          .join('、');
+        return `<div class="rt2-alert cont"><strong>提示 ${g.number} · 通道争用</strong><span>${props}</span></div>`;
+      })
+      .join('');
+  }
+
+  groupsEl.innerHTML = `
+    <h3>逐组通道线路（联合搜索结果，随区位 / 通道 / 提示变更实时重算）</h3>
+    ${rt.groups.map(routingGroupHtml).join('')}`;
+}
 
 /* ---------- 启动 ---------- */
 

@@ -12,6 +12,7 @@ const {
 const { computeAssignments } = require('./assignment');
 const { computeRotation } = require('./rotation');
 const { normalizeAbsenceRules, computeAbsenceRotation } = require('./absence');
+const { computeRouting } = require('./routing');
 
 const app = express();
 app.use(express.json());
@@ -53,15 +54,31 @@ function loadStaff() {
     .map((s) => ({ name: s.name, props: qualStmt.all(s.name).map((q) => q.prop) }));
 }
 
+/* 区位间的无向通道（规范化为 loc_a < loc_b 存储，禁止自环与重复连接） */
+function loadPassages() {
+  return db
+    .prepare('SELECT loc_a, loc_b FROM passages ORDER BY loc_a, loc_b')
+    .all()
+    .map((p) => ({ a: p.loc_a, b: p.loc_b }));
+}
+
 function loadState() {
   const { locations, props, cues } = loadBaseData();
   const staff = loadStaff();
+  const passages = loadPassages();
   const replayResult = replay(locations, props, cues);
   // 岗位表以最新重放结果 + 最新人员资格实时重算，不落地存储
   const assignments = computeAssignments(cues, replayResult.results, staff);
   // 连场轮换排班：对整场全部生效提示联合求解（相邻生效提示人员不重复），同样实时重算
   const rotation = computeRotation(cues, replayResult.results, staff);
-  return { locations, props, cues, replay: replayResult, staff, assignments, rotation };
+  // 换景通道规划：对生效提示逐组联合搜索不共边的简单路径组合，随区位/通道/提示实时重算
+  const routing = computeRouting(
+    locations,
+    passages.map((p) => ({ loc_a: p.a, loc_b: p.b })),
+    cues,
+    replayResult.results
+  );
+  return { locations, props, cues, replay: replayResult, staff, assignments, rotation, passages, routing };
 }
 
 function ok(res) {
@@ -98,7 +115,48 @@ app.delete('/api/locations/:name', (req, res) => {
     db.prepare('SELECT 1 FROM transfers WHERE from_loc = ? OR to_loc = ?').get(name, name)
   )
     return bad(res, `区位「${name}」仍被提示中的转移引用，无法删除`, 409);
-  db.prepare('DELETE FROM locations WHERE name = ?').run(name);
+  const tx = db.transaction(() => {
+    // 关联的无向通道随区位一并清理（表上两端 FK 均为 ON DELETE CASCADE，
+    // 这里显式删除以保证即使外部关闭 foreign_keys 也不留悬挂通道）
+    db.prepare('DELETE FROM passages WHERE loc_a = ? OR loc_b = ?').run(name, name);
+    db.prepare('DELETE FROM locations WHERE name = ?').run(name);
+  });
+  tx();
+  ok(res);
+});
+
+/* ---------- 换景通道（区位间无向边） ----------
+ * 通道不区分方向：提交 (A, B) 与 (B, A) 视为同一条。服务端把端点规范化
+ * 为字典序 (loc_a, loc_b) 后落库，自环（两端相同）与重复连接被入参校验
+ * 和数据库 PRIMARY KEY / CHECK 双重拒绝。删除任一端区位时关联通道随之清理。
+ */
+
+app.post('/api/passages', (req, res) => {
+  const a = String(req.body.a || '').trim();
+  const b = String(req.body.b || '').trim();
+  if (!a || !b) return bad(res, '请选择通道的两个区位');
+  if (a === b) return bad(res, '通道的两个端点不能是同一区位（禁止自环）');
+  if (!db.prepare('SELECT 1 FROM locations WHERE name = ?').get(a))
+    return bad(res, `区位「${a}」不存在`);
+  if (!db.prepare('SELECT 1 FROM locations WHERE name = ?').get(b))
+    return bad(res, `区位「${b}」不存在`);
+  const [x, y] = a < b ? [a, b] : [b, a];
+  try {
+    db.prepare('INSERT INTO passages (loc_a, loc_b) VALUES (?, ?)').run(x, y);
+  } catch (err) {
+    if (String(err.message).includes('UNIQUE'))
+      return bad(res, `「${x}」与「${y}」之间的通道已存在（重复连接）`, 409);
+    throw err;
+  }
+  ok(res);
+});
+
+app.delete('/api/passages/:a/:b', (req, res) => {
+  const a = req.params.a;
+  const b = req.params.b;
+  const [x, y] = a < b ? [a, b] : [b, a];
+  const r = db.prepare('DELETE FROM passages WHERE loc_a = ? AND loc_b = ?').run(x, y);
+  if (r.changes === 0) return bad(res, `「${x}」与「${y}」之间不存在通道`, 404);
   ok(res);
 });
 
@@ -562,6 +620,16 @@ app.get('/api/assignments', (req, res) => {
 app.get('/api/rotation', (req, res) => {
   const { rotation } = loadState();
   res.json(rotation);
+});
+
+/* ---------- 换景通道规划（独立预警查询 API） ----------
+ * 仅纳入全量重放生效的提示（失败组不执行，不占通道）；逐组为每条转移
+ * 联合搜索不共边的简单路径组合，区分端点不连通与通道争用。区位、通道或
+ * 提示变化后随全量状态实时重算，不落地存储（与 /api/state 中的 routing 一致）。
+ */
+app.get('/api/routing', (req, res) => {
+  const { routing } = loadState();
+  res.json(routing);
 });
 
 /* ---------- 临时缺席试排（不写库） ----------
