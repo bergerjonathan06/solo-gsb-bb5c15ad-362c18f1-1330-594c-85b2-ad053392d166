@@ -469,3 +469,35 @@ button:disabled { opacity: .55; cursor: wait; }
   font-size: 12px;
 }
 .rt-total .ab-absent-total { color: var(--accent); }
+
+/* 换景通道与线路规划 */
+#passage-list li .arrow { padding: 0 2px; }
+#passage-list li.passage-empty {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 5px 0;
+}
+#routes-summary strong { color: var(--text); }
+#routes-summary .sum-skip { color: var(--muted); }
+#routes-summary .sum-lack { color: var(--err); font-weight: 700; }
+.route-list { margin-top: 8px; }
+.route-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 14px;
+}
+.route-path { display: inline-flex; align-items: center; flex-wrap: wrap; }
+.route-loc {
+  background: rgba(143, 111, 216, .18);
+  border: 1px solid var(--accent2);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.route-dim { color: var(--muted); font-size: 12px; }

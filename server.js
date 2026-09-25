@@ -12,6 +12,7 @@ const {
 const { computeAssignments } = require('./assignment');
 const { computeRotation } = require('./rotation');
 const { normalizeAbsenceRules, computeAbsenceRotation } = require('./absence');
+const { planRoutes } = require('./routes');
 
 const app = express();
 app.use(express.json());
@@ -53,6 +54,13 @@ function loadStaff() {
     .map((s) => ({ name: s.name, props: qualStmt.all(s.name).map((q) => q.prop) }));
 }
 
+/* 换景通道（无向）：按录入顺序返回，loc_a/loc_b 已按字典序归一化 */
+function loadPassages() {
+  return db
+    .prepare('SELECT id, loc_a AS a, loc_b AS b FROM passages ORDER BY id')
+    .all();
+}
+
 function loadState() {
   const { locations, props, cues } = loadBaseData();
   const staff = loadStaff();
@@ -61,7 +69,11 @@ function loadState() {
   const assignments = computeAssignments(cues, replayResult.results, staff);
   // 连场轮换排班：对整场全部生效提示联合求解（相邻生效提示人员不重复），同样实时重算
   const rotation = computeRotation(cues, replayResult.results, staff);
-  return { locations, props, cues, replay: replayResult, staff, assignments, rotation };
+  const passages = loadPassages();
+  // 换景线路规划：仅对重放生效的提示逐组联合搜索互不共用通道的简单路径，
+  // 随区位、通道与提示变更实时重算，不落地存储
+  const routes = planRoutes(cues, replayResult.results, locations, passages);
+  return { locations, props, cues, replay: replayResult, staff, assignments, rotation, passages, routes };
 }
 
 function ok(res) {
@@ -98,7 +110,44 @@ app.delete('/api/locations/:name', (req, res) => {
     db.prepare('SELECT 1 FROM transfers WHERE from_loc = ? OR to_loc = ?').get(name, name)
   )
     return bad(res, `区位「${name}」仍被提示中的转移引用，无法删除`, 409);
-  db.prepare('DELETE FROM locations WHERE name = ?').run(name);
+  const tx = db.transaction(() => {
+    // 删除区位时清理关联通道（外键级联之外的显式清理，保证行为不依赖 pragma 状态）
+    db.prepare('DELETE FROM passages WHERE loc_a = ? OR loc_b = ?').run(name, name);
+    db.prepare('DELETE FROM locations WHERE name = ?').run(name);
+  });
+  tx();
+  ok(res);
+});
+
+/* ---------- 换景通道（区位间的无向连接） ----------
+ * 通道为无向边：禁止自环（两端相同）与重复连接（(A,B) 与 (B,A) 视为同一条，
+ * 存储时按字典序归一化为 loc_a < loc_b，数据库唯一约束兜底）。
+ * 删除区位时关联通道一并清理（见上方区位删除接口）。
+ */
+
+app.post('/api/passages', (req, res) => {
+  const a = String(req.body.a || '').trim();
+  const b = String(req.body.b || '').trim();
+  if (!a || !b) return bad(res, '请选择通道两端的区位');
+  if (a === b) return bad(res, `通道两端不能是同一区位「${a}」（禁止自环）`);
+  for (const name of [a, b]) {
+    if (!db.prepare('SELECT 1 FROM locations WHERE name = ?').get(name))
+      return bad(res, `区位「${name}」不存在`, 404);
+  }
+  // 无向通道按字典序归一化存储，(A,B) 与 (B,A) 是同一连接
+  const [x, y] = a < b ? [a, b] : [b, a];
+  if (db.prepare('SELECT 1 FROM passages WHERE loc_a = ? AND loc_b = ?').get(x, y))
+    return bad(res, `区位「${x}」与「${y}」之间已存在通道（无向，不允许重复连接）`, 409);
+  db.prepare('INSERT INTO passages (loc_a, loc_b) VALUES (?, ?)').run(x, y);
+  ok(res);
+});
+
+app.delete('/api/passages/:id', (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return bad(res, '通道编号不合法');
+  const row = db.prepare('SELECT loc_a, loc_b FROM passages WHERE id = ?').get(id);
+  if (!row) return bad(res, '通道不存在或已被删除', 404);
+  db.prepare('DELETE FROM passages WHERE id = ?').run(id);
   ok(res);
 });
 
@@ -562,6 +611,17 @@ app.get('/api/assignments', (req, res) => {
 app.get('/api/rotation', (req, res) => {
   const { rotation } = loadState();
   res.json(rotation);
+});
+
+/* ---------- 换景线路规划（逐组联合搜索查询 API） ----------
+ * 仅纳入全量重放生效的提示：同组每条道具转移分配一条简单路径，任意两条
+ * 路径不得共用通道；对整组联合搜索可行组合（不逐条固定最短路）。可行时
+ * 给出各转移完整经过区位；无解时区分端点不连通与通道争用并标出受影响
+ * 转移。区位、通道或提示变化后实时重算，不落地存储。
+ */
+app.get('/api/routes', (req, res) => {
+  const { routes } = loadState();
+  res.json(routes);
 });
 
 /* ---------- 临时缺席试排（不写库） ----------

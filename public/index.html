@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>🎭 舞台换景排练系统</h1>
-    <p>设置道具初始区位 → 按提示号录入同组转移 → 全量重放校验，整组通过才生效 → 按人员资格生成逐提示岗位表，并对整场生效提示联合求解连场轮换排班；还可临时添加缺席规则（人员 × 提示号闭区间）进行不写库的缺席试排</p>
+    <p>设置道具初始区位 → 按提示号录入同组转移 → 全量重放校验，整组通过才生效 → 按人员资格生成逐提示岗位表，并对整场生效提示联合求解连场轮换排班；还可临时添加缺席规则（人员 × 提示号闭区间）进行不写库的缺席试排；另可维护区位间无向通道，对生效提示逐组联合规划互不共用通道的转移线路并独立预警</p>
   </header>
 
   <main>
@@ -163,6 +163,28 @@
           </div>
         </form>
         <div id="absence-panel" class="preview-panel hidden"></div>
+      </div>
+    </section>
+
+    <!-- 八、换景通道与线路规划（独立预警，实时重算） -->
+    <section class="row">
+      <div class="card">
+        <h2>⑪ 换景通道（区位间无向连接）</h2>
+        <p class="hint">通道为区位间的无向连接，禁止自环与重复连接；删除区位时其关联通道一并清理。通道、区位或提示变化后，右侧线路规划立即按最新数据重算。</p>
+        <ul id="passage-list" class="tag-list"></ul>
+        <form id="passage-form" class="inline-form">
+          <select id="passage-a" required></select>
+          <span class="arrow">↔</span>
+          <select id="passage-b" required></select>
+          <button type="submit">添加通道</button>
+        </form>
+      </div>
+
+      <div class="card" id="routes-card">
+        <h2>⑫ 线路规划预警（逐组联合搜索）</h2>
+        <p class="hint">仅对<strong>重放生效</strong>的提示逐组规划线路（失败提示不规划）：同组每条道具转移分配一条<strong>简单路径</strong>，任意两条路径<strong>不得共用通道</strong>；系统对整组<strong>联合搜索</strong>可行组合，而非逐条固定最短路。存在可行组合时显示各转移完整经过的区位；无解时标出提示号与受影响转移，并区分<strong>端点不连通</strong>与<strong>通道争用</strong>。</p>
+        <p id="routes-summary" class="hint"></p>
+        <div id="routes-panel"></div>
       </div>
     </section>
   </main>

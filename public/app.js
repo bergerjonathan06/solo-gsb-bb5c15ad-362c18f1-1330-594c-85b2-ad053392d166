@@ -223,6 +223,134 @@ function render() {
   renderAssignments();
   renderRotation();
   renderAbsenceForm();
+  renderPassages();
+  renderRoutes();
+}
+
+/* ---------- 换景通道与线路规划（独立预警，实时重算） ---------- */
+
+function renderPassages() {
+  const ul = $('#passage-list');
+  ul.innerHTML = state.passages.length
+    ? state.passages
+        .map(
+          (p) => `
+        <li>
+          <strong>${esc(p.a)}</strong><span class="arrow">↔</span><strong>${esc(p.b)}</strong>
+          <button class="link" data-del-passage="${p.id}" title="删除通道">✕</button>
+        </li>`
+        )
+        .join('')
+    : '<li class="passage-empty">暂无通道，请在下方添加。</li>';
+
+  // 通道表单：两个区位下拉，默认选中前两个不同区位，避免默认自环
+  const opts = state.locations
+    .map((l) => `<option value="${esc(l.name)}">${esc(l.name)}</option>`)
+    .join('');
+  $('#passage-a').innerHTML = opts;
+  $('#passage-b').innerHTML = opts;
+  if (state.locations.length > 1) $('#passage-b').selectedIndex = 1;
+}
+
+function routePathHtml(path) {
+  return path
+    .map((loc) => `<span class="route-loc">${esc(loc)}</span>`)
+    .join('<span class="arrow">→</span>');
+}
+
+function renderRoutes() {
+  const rt = state.routes;
+  const summaryEl = $('#routes-summary');
+  const panel = $('#routes-panel');
+  if (!rt) {
+    summaryEl.textContent = '';
+    panel.innerHTML = '';
+    return;
+  }
+
+  summaryEl.innerHTML =
+    `共 <strong>${rt.summary.effectiveCues}</strong> 条生效提示参与线路规划` +
+    (rt.summary.skippedCues
+      ? `，<span class="sum-skip">${rt.summary.skippedCues} 条失败提示不规划</span>`
+      : '') +
+    `；通道 ${rt.summary.passages} 条。` +
+    (rt.summary.infeasibleCues
+      ? ` <span class="sum-lack">⚠ ${rt.summary.infeasibleCues} 组无可行线路</span>`
+      : rt.summary.limitedCues
+        ? ` <span class="sum-lack">⚠ ${rt.summary.limitedCues} 组未能完成规划</span>`
+        : '');
+
+  if (rt.status === 'empty') {
+    panel.innerHTML = '<p class="hint">当前没有整组生效的提示，无需规划线路。</p>';
+    return;
+  }
+
+  panel.innerHTML = rt.planned
+    .map((c) => {
+      if (c.status === 'ok') {
+        const lines = c.routes
+          .map(
+            (r) => `
+          <div class="route-line">
+            <span class="route-prop">「${esc(r.prop)}」</span>
+            <span class="route-path">${routePathHtml(r.path)}</span>
+          </div>`
+          )
+          .join('');
+        return `
+          <div class="cue-item ok">
+            <div class="cue-head">
+              <span class="num">提示 ${c.number}</span>
+              <span class="note">${esc(c.note || '')}</span>
+              <span class="badge ok">✓ 线路可行（${c.routes.length} 条转移，通道互不共用）</span>
+            </div>
+            <div class="route-list">${lines}</div>
+          </div>`;
+      }
+
+      if (c.status === 'limited') {
+        return `
+          <div class="cue-item fail">
+            <div class="cue-head">
+              <span class="num">提示 ${c.number}</span>
+              <span class="note">${esc(c.note || '')}</span>
+              <span class="badge fail">⚠ 未能完成规划</span>
+            </div>
+            <ul class="cue-errors"><li>${esc(c.limited.message)}</li></ul>
+          </div>`;
+      }
+
+      // 无解：区分端点不连通与通道争用，标出受影响转移
+      const isDisconnected = c.reason === 'disconnected';
+      const title = isDisconnected ? '⚠ 端点不连通' : '⚠ 通道争用，无可行组合';
+      const lines = isDisconnected
+        ? c.disconnected
+            .map(
+              (t) =>
+                `<li>「${esc(t.prop)}」 ${esc(t.from)} <span class="arrow">→</span> ${esc(t.to)}：来源与目标区位在通道图中不连通</li>`
+            )
+            .join('')
+        : c.affected
+            .map(
+              (t) =>
+                `<li>「${esc(t.prop)}」 ${esc(t.from)} <span class="arrow">→</span> ${esc(t.to)}<span class="route-dim">（单独有 ${t.pathCount} 条简单路径，但整组无法做到通道互不共用）</span></li>`
+            )
+            .join('');
+      const advice = isDisconnected
+        ? '请在 ⑪ 中补充通道，使上述转移的来源与目标区位连通。'
+        : '整组联合搜索已尝试全部简单路径组合：每条转移单独都能走通，但任意组合都必然有通道被共用。请在 ⑪ 中补充通道，或调整提示中的转移。';
+      return `
+        <div class="cue-item fail">
+          <div class="cue-head">
+            <span class="num">提示 ${c.number}</span>
+            <span class="note">${esc(c.note || '')}</span>
+            <span class="badge fail">${title}</span>
+          </div>
+          <ul class="cue-errors">${lines}</ul>
+          <p class="hint">${advice}</p>
+        </div>`;
+    })
+    .join('');
 }
 
 /* ---------- 换景人员与逐提示岗位表 ---------- */
@@ -515,7 +643,24 @@ $('#location-form').addEventListener('submit', (e) => {
 $('#location-list').addEventListener('click', (e) => {
   const name = e.target.dataset.delLoc;
   if (!name) return;
-  if (confirm(`删除区位「${name}」？`)) api(`/api/locations/${encodeURIComponent(name)}`, 'DELETE').catch(() => {});
+  if (confirm(`删除区位「${name}」？其关联通道将一并删除。`)) api(`/api/locations/${encodeURIComponent(name)}`, 'DELETE').catch(() => {});
+});
+
+/* ---------- 换景通道维护 ---------- */
+
+$('#passage-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const a = $('#passage-a').value;
+  const b = $('#passage-b').value;
+  if (!a || !b) return;
+  api('/api/passages', 'POST', { a, b }).catch(() => {});
+});
+
+$('#passage-list').addEventListener('click', (e) => {
+  const id = e.target.dataset.delPassage;
+  if (!id) return;
+  if (confirm('删除该通道？线路规划将立即按最新通道重算。'))
+    api(`/api/passages/${id}`, 'DELETE').catch(() => {});
 });
 
 $('#prop-form').addEventListener('submit', (e) => {

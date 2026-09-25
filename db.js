@@ -45,10 +45,19 @@ CREATE TABLE IF NOT EXISTS staff_quals (
   prop       TEXT NOT NULL,               -- 可搬运的道具；道具删除时由服务端一并清理
   PRIMARY KEY (staff, prop)               -- 同一人员对同一道具只记一条资格
 );
+
+CREATE TABLE IF NOT EXISTS passages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  loc_a      TEXT NOT NULL REFERENCES locations(name) ON DELETE CASCADE,
+  loc_b      TEXT NOT NULL REFERENCES locations(name) ON DELETE CASCADE,
+  CHECK (loc_a <> loc_b),                 -- 禁止自环
+  UNIQUE (loc_a, loc_b)                   -- 无向通道按字典序归一化存储，杜绝重复连接
+);
 `);
 
-// 首次启动时写入示例数据（区位 / 道具 / 人员 / 四条提示：30 号故意与 20 号冲突演示整组不生效，
-// 40 号故意让两件道具只能由同一人搬运，演示岗位匹配的人手不足）
+// 首次启动时写入示例数据（区位 / 道具 / 人员 / 无向通道 / 四条提示：30 号故意与 20 号冲突演示整组不生效，
+// 40 号故意让两件道具只能由同一人搬运，演示岗位匹配的人手不足；通道构成「后台—两翼—中央」的
+// 换景动线，10 号提示的同组互换需联合搜索为两件道具分配互不共用通道的线路）
 function seed() {
   const { c } = db.prepare('SELECT COUNT(*) AS c FROM locations').get();
   if (c > 0) return;
@@ -76,6 +85,16 @@ function seed() {
     insStaff.run('王五');
     insQual.run('王五', '屏风');
     insQual.run('王五', '椅子');
+
+    // 无向通道：按字典序归一化（loc_a < loc_b），与服务端录入校验一致
+    const insPassage = db.prepare('INSERT INTO passages (loc_a, loc_b) VALUES (?, ?)');
+    const addPassage = (a, b) => (a < b ? insPassage.run(a, b) : insPassage.run(b, a));
+    addPassage('后台', '舞台左');
+    addPassage('后台', '舞台右');
+    addPassage('后台', '舞台中央');
+    addPassage('舞台左', '舞台中央');
+    addPassage('舞台右', '舞台中央');
+    addPassage('舞台中央', '高台');
 
     const insCue = db.prepare('INSERT INTO cues (number, note) VALUES (?, ?)');
     const insTr = db.prepare(
